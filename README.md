@@ -3,33 +3,52 @@
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/pytorch-1.12+-red.svg)](https://pytorch.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-49%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-120%2B%20passed-brightgreen.svg)]()
 
 ## Overview
 
 DBBD (Dual Branch Bi-Directional) is a self-supervised learning framework for 3D point clouds that learns rich multi-scale representations through hierarchical contrastive learning.
 
-### Current Status: Phase 2 Complete ✓
+### Current Status: Phase 5 Complete ✓
 
 | Phase | Description | Status |
 |-------|-------------|--------|
 | Phase 1 | Offline preprocessing - hierarchical decompositions | ✅ Complete |
 | Phase 2 | Data integration & feature processing | ✅ Complete |
-| Phase 3 | Hierarchical encoding - bidirectional traversal | 🔜 Next |
-| Phase 4 | Loss functions & training loop | ⏳ Planned |
+| Phase 3 | Hierarchical encoding - bidirectional traversal | ✅ Complete |
+| Phase 4 | Contrastive losses | ✅ Complete |
+| Phase 5 | Training loop & checkpointing | ✅ Complete |
 
-## Phase 2 Components
+## Components
 
-### Data Integration
+### Data Layer (`dbbd/datasets/`)
 - `DBBDDataset`: Loads point clouds with precomputed hierarchies
 - Dual-view augmentation for contrastive learning
 - Custom collation for variable-size batching
-- Hierarchy caching for efficiency
+- `max_scenes` parameter for limiting dataset size
 
-### Feature Processing Networks
+### Feature Processing (`dbbd/models/features/`)
 - `FeaturePropagator`: Global-to-local (G2L) feature propagation
-- `FeatureAggregator`: Local-to-global (L2G) feature aggregation
-- Multi-scale variants for hierarchical levels
+- `FeatureAggregator`: Local-to-global (L2G) feature aggregation (max/mean/attention)
+
+### Hierarchical Encoder (`dbbd/models/encoder/`)
+- `HierarchicalEncoder`: Main orchestrator for G2L/L2G branches
+- `PointCloudEncoder`: PointNet-style backbone with coordinate centering
+- `G2LTraversal`: Top-down (pre-order) traversal with context propagation
+- `L2GTraversal`: Bottom-up (post-order) traversal with feature aggregation
+- `FeatureCollector`: Collects features by level with offset tracking
+
+### Contrastive Loss (`dbbd/models/loss/`)
+- `DBBDContrastiveLoss`: Combined loss = α×L_region + β×L_point
+- `InfoNCELoss`: Core contrastive loss using F.cross_entropy
+- `RegionContrastiveLoss`: Hierarchy-level contrastive learning
+- `PointContrastiveLoss`: Fine-grained point-level loss with subsampling
+- `ContrastiveProjectionHead`: LayerNorm-based projection (supports batch_size=1)
+
+### Training (`dbbd/training/`)
+- `Trainer`: Full training loop with validation, checkpointing, early stopping
+- `TrainingConfig`: YAML-serializable config with `small_mode` for local testing
+- TensorBoard integration for loss and learning rate logging
 
 ### Augmentation Transforms
 - Geometric: rotation, scaling, translation
@@ -166,7 +185,25 @@ child_features = torch.randn(8, 96)  # From 8 child region encodings
 aggregated = aggregator(child_features)  # (96,)
 ```
 
-### 4. Run Demo
+### 4. Train the Model
+
+```bash
+# Full training
+python train.py --data_root datasets/scannet --epochs 100
+
+# Small mode for local testing (reduced backbone, fewer scenes)
+python train.py --small_mode --epochs 10
+
+# With config file
+python train.py --config configs/debug_local.yaml
+```
+
+TensorBoard logs are saved to `runs/` directory:
+```bash
+tensorboard --logdir runs/
+```
+
+### 5. Run Demo
 
 ```bash
 python examples/phase2_demo.py
@@ -297,6 +334,42 @@ Aggregates child region features to parent.
 aggregator(child_features) -> aggregated_feature
 ```
 
+#### `HierarchicalEncoder`
+Main encoder orchestrating bidirectional traversal.
+
+**Parameters:**
+- `input_dim` (int): Input feature dimension (default: 3 for normals)
+- `hidden_dim` (int): Hidden/output dimension (default: 96)
+- `hidden_dims` (list): PointNet backbone dimensions (default: [64, 128])
+- `aggregation` (str): Aggregation mode ('max', 'mean', 'attention')
+
+**Forward:**
+```python
+encoder(batch) -> {
+    'g2l': {'level_0': (N0, D), 'level_1': (N1, D), ...},
+    'l2g': {'level_0': (N0, D), 'level_1': (N1, D), ...},
+    'point_feats_g2l': (total_points, D),
+    'point_feats_l2g': (total_points, D),
+    'offsets_by_level': {'level_0': (B+1,), ...},
+    'point_offset': (B+1,)
+}
+```
+
+#### `DBBDContrastiveLoss`
+Combined contrastive loss for region and point features.
+
+**Parameters:**
+- `encoder_dim` (int): Encoder output dimension (default: 96)
+- `proj_dim` (int): Projection dimension (default: 128)
+- `temperature` (float): InfoNCE temperature (default: 0.1)
+- `alpha` (float): Region loss weight (default: 1.0)
+- `beta` (float): Point loss weight (default: 0.5)
+
+**Forward:**
+```python
+criterion(encoder_output) -> (loss, {'total': ..., 'region': ..., 'point': ...})
+```
+
 ### Transforms
 
 All transforms follow the pattern:
@@ -321,24 +394,50 @@ DBBD/
 │   ├── __init__.py
 │   ├── datasets/
 │   │   ├── __init__.py
-│   │   ├── dbbd_dataset.py      # Main dataset class
-│   │   └── transforms.py         # Augmentation transforms
+│   │   ├── dbbd_dataset.py       # Main dataset class
+│   │   └── transforms.py          # Augmentation transforms
 │   ├── models/
 │   │   ├── __init__.py
 │   │   ├── features/
-│   │   │   ├── propagator.py    # FeaturePropagator
-│   │   │   └── aggregator.py    # FeatureAggregator
+│   │   │   ├── propagator.py     # FeaturePropagator (G2L)
+│   │   │   └── aggregator.py     # FeatureAggregator (L2G)
+│   │   ├── encoder/
+│   │   │   ├── hierarchical_encoder.py  # Main encoder
+│   │   │   ├── point_encoder.py         # PointNet backbone
+│   │   │   ├── traversal.py             # G2L/L2G traversal
+│   │   │   ├── projection.py            # Feature projection MLPs
+│   │   │   └── collector.py             # Feature collection
+│   │   ├── loss/
+│   │   │   ├── dbbd_loss.py      # Combined contrastive loss
+│   │   │   ├── infonce.py        # InfoNCE implementation
+│   │   │   ├── region_loss.py    # Region-level loss
+│   │   │   ├── point_loss.py     # Point-level loss
+│   │   │   └── projection.py     # Projection head
 │   │   └── utils/
-│   │       ├── hierarchy.py     # Region class, loading
-│   │       └── batch.py         # Collation functions
+│   │       ├── hierarchy.py      # Region class, loading
+│   │       └── batch.py          # Collation functions
+│   ├── training/
+│   │   ├── __init__.py
+│   │   ├── config.py             # TrainingConfig
+│   │   └── trainer.py            # Trainer class
 │   └── configs/
-│       └── dbbd_scannet.py      # Example configuration
+│       └── dbbd_scannet.py       # Example configuration
 ├── tests/
-│   ├── test_dataset.py          # Dataset tests
-│   ├── test_features.py         # Feature network tests
-│   └── test_integration.py      # Integration tests
+│   ├── test_dataset.py           # Dataset tests
+│   ├── test_features.py          # Feature network tests
+│   ├── test_encoder.py           # Encoder tests
+│   ├── test_loss.py              # Loss function tests
+│   ├── test_training_loop.py     # Training tests
+│   └── test_integration.py       # Integration tests
+├── docs/
+│   ├── phase1_summary.md
+│   ├── phase2_summary.md
+│   ├── phase3_summary.md
+│   ├── phase4_summary.md
+│   └── phase5_summary.md
 ├── examples/
-│   └── phase2_demo.py           # Demonstration script
+│   └── phase2_demo.py            # Demonstration script
+├── train.py                       # Training entry point
 ├── requirements.txt
 ├── setup.py
 └── README.md
@@ -368,52 +467,40 @@ DBBD/
 - Enable `cache_hierarchies=True`
 - Use SSD for data storage
 
-## Phase 2 Key Decisions
+## Key Design Decisions
 
-Important architectural and design decisions made during Phase 2:
+### Data Format
+- **Combined `.pkl` files**: Point clouds and hierarchies stored together for consistency
+- **Dict-to-Region conversion**: Portable pickle storage with clean API at runtime
+- **8-way branching**: Octree-like spatial decomposition (~2,500 regions per scene)
 
-### 1. Combined Data Format
-**Decision**: Store point clouds and hierarchies together in single `.pkl` files.
+### Encoder Architecture
+- **Shared PointNet backbone**: Single encoder used by both G2L and L2G branches
+- **Coordinate centering**: All region coordinates centered before encoding
+- **96-dim features**: Balances expressiveness vs. memory
 
-**Rationale**: The original design had separate data (`.pth`) and hierarchy (`.pkl`) files. We consolidated to:
-- Simplify data management (one file per scene)
-- Ensure data-hierarchy consistency
-- Reduce I/O overhead during loading
+### Contrastive Learning
+- **LayerNorm in projection head**: Supports small batch sizes (batch_size=1)
+- **F.cross_entropy for InfoNCE**: Better numerical stability than manual log-exp
+- **Point subsampling**: Random 4096-point sampling for efficient point-level loss
 
-### 2. Dict-to-Region Conversion
-**Decision**: Hierarchies stored as nested dicts, converted to `Region` objects at load time.
-
-**Rationale**: 
-- Pickle files with raw dicts are more portable
-- `Region` dataclass provides clean API with methods like `get_depth()`, `get_all_descendants()`
-- Conversion happens once per load, cached for efficiency
-
-### 3. Feature Dimensions
-**Decision**: Normals (3D) used as point features; 96-dim feature vectors throughout.
-
-**Rationale**:
-- Normals available from ScanNet preprocessing
-- 96-dim balances expressiveness vs. memory (matches common encoder widths)
-- Can extend to RGB+normals (6D) if needed
-
-### 4. 8-way Branching Factor
-**Decision**: Each hierarchy node has up to 8 children.
-
-**Rationale**:
-- Matches octree-like spatial decomposition
-- Provides ~2,500 regions for typical scenes
-- 4 levels of depth sufficient for multi-scale learning
+### Training
+- **Small mode**: Auto-adjusts all settings for local testing
+- **TensorBoard always enabled**: Logs to `runs/` when tensorboard is installed
 
 ---
 
 ## Test Coverage
 
-**49 tests passing** across all modules:
+**120+ tests passing** across all modules:
 
 | Module | Tests | Coverage |
 |--------|-------|----------|
 | `test_dataset.py` | 20 | Dataset, transforms, dict-to-region |
 | `test_features.py` | 21 | Propagator, aggregator, multi-scale |
+| `test_encoder.py` | 36 | PointCloudEncoder, traversal, HierarchicalEncoder |
+| `test_loss.py` | 40+ | InfoNCE, region loss, point loss, combined loss |
+| `test_training_loop.py` | 23 | Config, trainer, checkpointing, validation |
 | `test_integration.py` | 8 | Batching, dataloader, end-to-end |
 
 ---
@@ -423,11 +510,11 @@ Important architectural and design decisions made during Phase 2:
 If you use this code, please cite:
 
 ```bibtex
-@article{dbbd2024,
+@article{dbbd2026,
   title={DBBD: Dual Branch Bi-Directional Self-Supervised Learning for Point Clouds},
   author={Your Name},
   journal={arXiv preprint},
-  year={2024}
+  year={2026}
 }
 ```
 
@@ -440,23 +527,12 @@ This project is licensed under the MIT License - see LICENSE file for details.
 - Built on top of [Pointcept](https://github.com/Pointcept/Pointcept) framework
 - Inspired by hierarchical and contrastive learning methods for point clouds
 
-## Next Steps: Phase 3
+## Future Work
 
-Phase 2 is complete. Phase 3 will implement:
-
-1. **Encoder Backbone Integration**
-   - Integrate SpUNet or similar point cloud encoder
-   - Region-wise encoding with feature pooling
-
-2. **Bidirectional Traversal**
-   - Top-down (G2L): Propagate global context to local regions
-   - Bottom-up (L2G): Aggregate local features to global
-
-3. **Hierarchical Feature Pipeline**
-   - Combine encoder, propagator, and aggregator
-   - Multi-scale feature extraction
-
-See `phase3_final_guide.md` for detailed Phase 3 specifications.
+- Downstream task evaluation (semantic segmentation, object detection)
+- Larger-scale training on full ScanNet
+- Integration with SpUNet or other sparse convolution backbones
+- Multi-GPU distributed training
 
 ## Contact
 
