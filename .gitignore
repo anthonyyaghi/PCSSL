@@ -54,6 +54,7 @@ outputs/
 logs/
 checkpoints/
 temp_demo_data/
+runs/
 
 # Environment
 venv/

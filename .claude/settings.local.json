@@ -1,7 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(dir /b \"c:\\\\Users\\\\antho\\\\DBBD\\\\datasets\\\\scannet\\\\train\")",
+      "Bash(pip uninstall:*)",
+      "Bash(pip install:*)",
+      "Bash(pytest:*)",
+      "Bash(python train.py:*)",
+      "Bash(python -c:*)",
+      "Bash(cmd /c \"cd C:\\\\Users\\\\antho\\\\DBBD && del nul 2>&1\")",
+      "Bash(cmd /c \"del \\\\?\\\\C:\\\\Users\\\\antho\\\\DBBD\\\\nul\")"
     ]
   }
 }

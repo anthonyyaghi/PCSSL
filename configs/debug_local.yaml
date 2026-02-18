@@ -1,0 +1,15 @@
+small_mode: true
+data_root: "datasets/scannet"
+max_train_scenes: 4
+max_val_scenes: 2
+num_epochs: 10
+batch_size: 2
+num_workers: 0
+checkpoint_dir: "checkpoints/debug"
+log_interval: 1
+eval_interval: 2
+save_interval: 5
+verbose: true
+device: "cuda"
+learning_rate: 0.001
+seed: 42

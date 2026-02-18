@@ -25,6 +25,7 @@ setup(
         'torch>=1.12.0',
         'numpy>=1.21.0',
         'scipy>=1.7.0',
+        'tqdm>=4.50.0',
     ],
     extras_require={
         'dev': [
