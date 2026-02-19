@@ -9,7 +9,8 @@
       "Bash(python train.py:*)",
       "Bash(python -c:*)",
       "Bash(cmd /c \"cd C:\\\\Users\\\\antho\\\\DBBD && del nul 2>&1\")",
-      "Bash(cmd /c \"del \\\\?\\\\C:\\\\Users\\\\antho\\\\DBBD\\\\nul\")"
+      "Bash(cmd /c \"del \\\\?\\\\C:\\\\Users\\\\antho\\\\DBBD\\\\nul\")",
+      "Bash(python -m pytest:*)"
     ]
   }
 }

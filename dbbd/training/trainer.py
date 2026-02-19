@@ -1,8 +1,11 @@
 """DBBD Trainer"""
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from pathlib import Path
 from typing import Optional, Dict, Tuple
 import logging
@@ -23,11 +26,19 @@ except ImportError:
 
 
 class Trainer:
-    def __init__(self, config: TrainingConfig):
+    def __init__(self, config: TrainingConfig, local_rank: int = 0, world_size: int = 1):
         self.config = config
-        self.device = torch.device(
-            config.device if torch.cuda.is_available() and config.device == "cuda" else "cpu"
-        )
+        self.local_rank = local_rank
+        self.world_size = world_size
+        self.is_distributed = world_size > 1
+        self.is_rank_zero = local_rank == 0
+
+        if self.is_distributed:
+            self.device = torch.device(f"cuda:{local_rank}")
+        else:
+            self.device = torch.device(
+                config.device if torch.cuda.is_available() and config.device == "cuda" else "cpu"
+            )
 
         self._setup_seed()
         self._build_model()
@@ -77,6 +88,17 @@ class Trainer:
             point_num_samples=self.config.point_num_samples,
         ).to(self.device)
 
+        if self.is_distributed:
+            self.encoder = DDP(
+                self.encoder, device_ids=[self.local_rank], find_unused_parameters=False
+            )
+            self.loss_fn = DDP(
+                self.loss_fn, device_ids=[self.local_rank], find_unused_parameters=False
+            )
+
+    def _unwrap(self, module):
+        return module.module if self.is_distributed else module
+
     def _build_optimizer(self):
         params = list(self.encoder.parameters()) + list(self.loss_fn.parameters())
         self.optimizer = torch.optim.AdamW(
@@ -97,6 +119,8 @@ class Trainer:
 
     def _setup_tensorboard(self):
         self.writer = None
+        if not self.is_rank_zero:
+            return
         if TENSORBOARD_AVAILABLE:
             run_name = datetime.now().strftime("%Y%m%d_%H%M%S")
             log_path = Path(self.config.log_dir) / run_name
@@ -170,6 +194,16 @@ class Trainer:
 
         return total_loss, metrics
 
+    def _reduce_metrics(self, metrics: Dict[str, float]) -> Dict[str, float]:
+        if not self.is_distributed:
+            return metrics
+        reduced = {}
+        for k, v in metrics.items():
+            tensor = torch.tensor(v, device=self.device)
+            dist.all_reduce(tensor, op=dist.ReduceOp.AVG)
+            reduced[k] = tensor.item()
+        return reduced
+
     @torch.no_grad()
     def validate(self, val_loader: DataLoader) -> Dict[str, float]:
         self.encoder.eval()
@@ -179,7 +213,7 @@ class Trainer:
         num_batches = 0
 
         for batch in tqdm(val_loader, desc="Validating", leave=False,
-                          disable=not self.config.verbose):
+                          disable=not self.is_rank_zero or not self.config.verbose):
             batch = self._move_batch_to_device(batch)
             encoder_output = self.encoder(batch)
             _, loss_dict = self.loss_fn(encoder_output)
@@ -202,14 +236,17 @@ class Trainer:
             for k in total_metrics:
                 total_metrics[k] /= num_batches
 
-        return total_metrics
+        return self._reduce_metrics(total_metrics)
 
     def save_checkpoint(self, path: str, extra: Optional[Dict] = None):
+        if not self.is_rank_zero:
+            return
+
         checkpoint = {
             "epoch": self.current_epoch,
             "global_step": self.global_step,
-            "encoder_state_dict": self.encoder.state_dict(),
-            "loss_fn_state_dict": self.loss_fn.state_dict(),
+            "encoder_state_dict": self._unwrap(self.encoder).state_dict(),
+            "loss_fn_state_dict": self._unwrap(self.loss_fn).state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "best_val_loss": self.best_val_loss,
             "config": self.config,
@@ -228,8 +265,8 @@ class Trainer:
     def load_checkpoint(self, path: str):
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
-        self.encoder.load_state_dict(checkpoint["encoder_state_dict"])
-        self.loss_fn.load_state_dict(checkpoint["loss_fn_state_dict"])
+        self._unwrap(self.encoder).load_state_dict(checkpoint["encoder_state_dict"])
+        self._unwrap(self.loss_fn).load_state_dict(checkpoint["loss_fn_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
         self.current_epoch = checkpoint["epoch"]
@@ -239,25 +276,32 @@ class Trainer:
         if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
             self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
-        if self.config.verbose:
+        if self.is_rank_zero and self.config.verbose:
             logger.info(f"Loaded checkpoint from {path}, epoch={self.current_epoch}")
 
     def fit(
         self,
         train_loader: DataLoader,
         val_loader: Optional[DataLoader] = None,
+        train_sampler: Optional[DistributedSampler] = None,
     ) -> Dict[str, list]:
         history = {"train_loss": [], "val_loss": []}
+
+        show_progress = self.is_rank_zero and self.config.verbose
 
         epoch_pbar = tqdm(
             range(self.current_epoch, self.config.num_epochs),
             desc="Training",
             unit="epoch",
-            disable=not self.config.verbose
+            disable=not show_progress
         )
 
         for epoch in epoch_pbar:
             self.current_epoch = epoch
+
+            if train_sampler is not None:
+                train_sampler.set_epoch(epoch)
+
             epoch_loss = 0.0
             num_batches = 0
 
@@ -265,7 +309,7 @@ class Trainer:
                 train_loader,
                 desc=f"Epoch {epoch}",
                 leave=False,
-                disable=not self.config.verbose
+                disable=not show_progress
             )
 
             for batch in batch_pbar:
@@ -276,11 +320,12 @@ class Trainer:
                 self._log_metrics(metrics, self.global_step, prefix="train")
                 self._log_lr(self.global_step)
 
-                batch_pbar.set_postfix({
-                    'loss': f"{loss.item():.3f}",
-                    'align': f"{metrics.get('alignment', 0):.3f}",
-                    'std': f"{metrics.get('feat_std', 0):.3f}",
-                })
+                if show_progress:
+                    batch_pbar.set_postfix({
+                        'loss': f"{loss.item():.3f}",
+                        'align': f"{metrics.get('alignment', 0):.3f}",
+                        'std': f"{metrics.get('feat_std', 0):.3f}",
+                    })
 
             avg_train_loss = epoch_loss / max(num_batches, 1)
             history["train_loss"].append(avg_train_loss)
@@ -300,10 +345,11 @@ class Trainer:
                     self.best_val_loss = val_loss
                     self.save_checkpoint(f"{self.config.checkpoint_dir}/best.pth")
 
-            epoch_pbar.set_postfix({
-                'loss': f"{avg_train_loss:.4f}",
-                'val': f"{val_loss:.4f}" if val_loss else "N/A"
-            })
+            if show_progress:
+                epoch_pbar.set_postfix({
+                    'loss': f"{avg_train_loss:.4f}",
+                    'val': f"{val_loss:.4f}" if val_loss else "N/A"
+                })
 
             if self.writer is not None:
                 self.writer.add_scalar("epoch/train_loss", avg_train_loss, epoch)
