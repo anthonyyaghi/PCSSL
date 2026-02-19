@@ -18,34 +18,9 @@ This is equivalent to cross-entropy with labels = arange(N).
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
 import logging
 
 logger = logging.getLogger(__name__)
-
-
-class _GatherWithGrad(torch.autograd.Function):
-    """Gather tensors from all GPUs with gradient support."""
-
-    @staticmethod
-    def forward(ctx, tensor):
-        world_size = dist.get_world_size()
-        gathered = [torch.zeros_like(tensor) for _ in range(world_size)]
-        dist.all_gather(gathered, tensor)
-        ctx.rank = dist.get_rank()
-        ctx.world_size = world_size
-        return tuple(gathered)
-
-    @staticmethod
-    def backward(ctx, *grads):
-        return grads[ctx.rank]
-
-
-def gather_with_grad(tensor):
-    if not dist.is_available() or not dist.is_initialized() or dist.get_world_size() == 1:
-        return tensor
-    gathered = _GatherWithGrad.apply(tensor)
-    return torch.cat(gathered, dim=0)
 
 
 class InfoNCELoss(nn.Module):
@@ -55,8 +30,8 @@ class InfoNCELoss(nn.Module):
     Uses PyTorch's F.cross_entropy which is mathematically equivalent to
     InfoNCE when labels are the diagonal indices (arange(N)).
 
-    When running with DDP, gathers embeddings from all GPUs so that
-    negatives span the full global batch.
+    Negatives are computed within each GPU's local batch. With DDP,
+    gradient averaging across GPUs ensures correct optimization.
 
     Args:
         temperature: Temperature hyperparameter for softmax scaling.
@@ -105,19 +80,8 @@ class InfoNCELoss(nn.Module):
                 f"Shape mismatch: query {query.shape} vs key {key.shape}"
             )
 
-        all_key = gather_with_grad(key)
-
-        # Similarity: local queries against all keys
-        # Single GPU: (N, N), Multi-GPU: (N, N*world_size)
-        sim = torch.mm(query, all_key.T) / self.temperature
-
-        # Labels: positive for query[i] is at position (rank * N + i) in the gathered keys
-        if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
-            rank = dist.get_rank()
-            labels = torch.arange(N, device=query.device, dtype=torch.long) + rank * N
-        else:
-            labels = torch.arange(N, device=query.device, dtype=torch.long)
-
+        sim = torch.mm(query, key.T) / self.temperature
+        labels = torch.arange(N, device=query.device, dtype=torch.long)
         loss = F.cross_entropy(sim, labels)
 
         return loss
