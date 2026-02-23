@@ -6,6 +6,7 @@ G2L (Global-to-Local) and L2G (Local-to-Global) traversal implementations.
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from typing import Dict, List, Optional
 from collections import defaultdict
 import logging
@@ -36,14 +37,16 @@ class L2GTraversal(nn.Module):
         projection: nn.Module,
         encoder: nn.Module,
         aggregator: nn.Module,
-        use_spatial_context: bool = True
+        use_spatial_context: bool = True,
+        use_checkpoint: bool = False
     ):
         super().__init__()
-        
+
         self.projection = projection
         self.encoder = encoder
         self.aggregator = aggregator
         self.use_spatial_context = use_spatial_context
+        self.use_checkpoint = use_checkpoint
     
     def forward(
         self,
@@ -64,28 +67,32 @@ class L2GTraversal(nn.Module):
             e.g., {'level_0': (1, D), 'level_1': (4, D), ...}
         """
         features_by_level = defaultdict(list)
-        point_features = {}  # region_id -> point_feats for leaves
-        
+        point_features = {}
+        point_indices = {}
+
         def traverse(region: Region) -> torch.Tensor:
             """Recursive post-order traversal."""
             if region.is_leaf:
-                # Leaves: encode with backbone
                 region_coords = coords[region.indices]
                 region_feats = feats[region.indices]
                 center = coords[region.center_idx]
-                
-                # Project raw features
+
                 projected = self.projection(region_feats)
-                
-                # Encode
-                region_feat, point_feats = self.encoder(
-                    region_coords, projected, center=center
-                )
-                
-                # Store
+
+                if self.use_checkpoint and torch.is_grad_enabled():
+                    region_feat, point_feats = grad_checkpoint(
+                        self.encoder, region_coords, projected, center,
+                        use_reentrant=False
+                    )
+                else:
+                    region_feat, point_feats = self.encoder(
+                        region_coords, projected, center=center
+                    )
+
                 features_by_level[f'level_{region.level}'].append(region_feat)
                 point_features[id(region)] = point_feats
-                
+                point_indices[id(region)] = region.indices
+
                 return region_feat
             
             # Non-leaves: recurse first, then aggregate
@@ -122,9 +129,9 @@ class L2GTraversal(nn.Module):
         for level_name, feat_list in features_by_level.items():
             result[level_name] = torch.stack(feat_list)
         
-        # Add point features for leaves
         result['_point_features'] = point_features
-        
+        result['_point_indices'] = point_indices
+
         return result
 
 
@@ -150,14 +157,16 @@ class G2LTraversal(nn.Module):
         raw_projection: nn.Module,
         combine_projection: nn.Module,
         encoder: nn.Module,
-        propagator: nn.Module
+        propagator: nn.Module,
+        use_checkpoint: bool = False
     ):
         super().__init__()
-        
+
         self.raw_projection = raw_projection
         self.combine_projection = combine_projection
         self.encoder = encoder
         self.propagator = propagator
+        self.use_checkpoint = use_checkpoint
     
     def forward(
         self,
@@ -177,35 +186,43 @@ class G2LTraversal(nn.Module):
             Dict mapping level names to feature tensors
         """
         features_by_level = defaultdict(list)
-        point_features = {}  # region_id -> point_feats for leaves
-        
+        point_features = {}
+        point_indices = {}
+
         def traverse(region: Region, parent_feat: Optional[torch.Tensor] = None):
             """Recursive pre-order traversal."""
             region_coords = coords[region.indices]
             region_feats = feats[region.indices]
             center = coords[region.center_idx]
-            
-            # Prepare input features
+
             if parent_feat is None:
-                # Root: just project raw features
                 encoder_input = self.raw_projection(region_feats)
             else:
-                # Non-root: propagate parent context and combine
-                propagated = self.propagator(parent_feat, region_coords)
+                if self.use_checkpoint and torch.is_grad_enabled():
+                    propagated = grad_checkpoint(
+                        self.propagator, parent_feat, region_coords,
+                        use_reentrant=False
+                    )
+                else:
+                    propagated = self.propagator(parent_feat, region_coords)
                 encoder_input = self.combine_projection(region_feats, propagated)
-            
-            # Encode this region
-            region_feat, point_feats = self.encoder(
-                region_coords, encoder_input, center=center
-            )
-            
-            # Store
+
+            if self.use_checkpoint and torch.is_grad_enabled():
+                region_feat, point_feats = grad_checkpoint(
+                    self.encoder, region_coords, encoder_input, center,
+                    use_reentrant=False
+                )
+            else:
+                region_feat, point_feats = self.encoder(
+                    region_coords, encoder_input, center=center
+                )
+
             features_by_level[f'level_{region.level}'].append(region_feat)
-            
+
             if region.is_leaf:
                 point_features[id(region)] = point_feats
-            
-            # Recurse to children
+                point_indices[id(region)] = region.indices
+
             for child in region.children:
                 traverse(child, parent_feat=region_feat)
         
@@ -217,7 +234,7 @@ class G2LTraversal(nn.Module):
         for level_name, feat_list in features_by_level.items():
             result[level_name] = torch.stack(feat_list)
         
-        # Add point features for leaves
         result['_point_features'] = point_features
-        
+        result['_point_indices'] = point_indices
+
         return result

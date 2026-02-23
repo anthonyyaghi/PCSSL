@@ -48,10 +48,14 @@ class TrainingConfig:
     data_root: str = "datasets/scannet"
     max_train_scenes: Optional[int] = None
     max_val_scenes: Optional[int] = None
+    max_hierarchy_depth: Optional[int] = None
 
     device: str = "cuda"
 
     seed: int = 42
+
+    use_amp: bool = True
+    use_gradient_checkpoint: bool = True
 
     def __post_init__(self):
         if self.small_mode:
@@ -75,6 +79,8 @@ class TrainingConfig:
                 self.max_train_scenes = 4
             if self.max_val_scenes is None:
                 self.max_val_scenes = 2
+            if self.max_hierarchy_depth is None:
+                self.max_hierarchy_depth = 2
 
     @classmethod
     def from_yaml(cls, path: str) -> "TrainingConfig":

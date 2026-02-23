@@ -50,6 +50,9 @@ class Trainer:
         self.global_step = 0
         self.best_val_loss = float("inf")
 
+        self.use_amp = config.use_amp and self.device.type == "cuda"
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
+
     def _setup_seed(self):
         torch.manual_seed(self.config.seed)
         if torch.cuda.is_available():
@@ -77,6 +80,7 @@ class Trainer:
             propagator_config=propagator_config,
             aggregator_config=aggregator_config,
             encoder_config=encoder_config,
+            use_gradient_checkpoint=self.config.use_gradient_checkpoint,
         ).to(self.device)
 
         self.loss_fn = DBBDContrastiveLoss(
@@ -180,13 +184,15 @@ class Trainer:
 
         self.optimizer.zero_grad()
 
-        encoder_output = self.encoder(batch)
-        total_loss, loss_dict = self.loss_fn(encoder_output)
+        with torch.amp.autocast("cuda", enabled=self.use_amp):
+            encoder_output = self.encoder(batch)
+            total_loss, loss_dict = self.loss_fn(encoder_output)
 
         embed_metrics = self._compute_embedding_metrics(encoder_output)
 
-        total_loss.backward()
-        self.optimizer.step()
+        self.scaler.scale(total_loss).backward()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
 
         metrics = {k: v.item() for k, v in loss_dict.items()}
         metrics.update(embed_metrics)
@@ -215,8 +221,10 @@ class Trainer:
         for batch in tqdm(val_loader, desc="Validating", leave=False,
                           disable=not self.is_rank_zero or not self.config.verbose):
             batch = self._move_batch_to_device(batch)
-            encoder_output = self.encoder(batch)
-            _, loss_dict = self.loss_fn(encoder_output)
+
+            with torch.amp.autocast("cuda", enabled=self.use_amp):
+                encoder_output = self.encoder(batch)
+                _, loss_dict = self.loss_fn(encoder_output)
 
             embed_metrics = self._compute_embedding_metrics(encoder_output)
 
@@ -253,6 +261,8 @@ class Trainer:
         }
         if self.scheduler is not None:
             checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
+        if self.use_amp:
+            checkpoint["scaler_state_dict"] = self.scaler.state_dict()
         if extra:
             checkpoint.update(extra)
 
@@ -275,6 +285,8 @@ class Trainer:
 
         if self.scheduler is not None and "scheduler_state_dict" in checkpoint:
             self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        if self.use_amp and "scaler_state_dict" in checkpoint:
+            self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
         if self.is_rank_zero and self.config.verbose:
             logger.info(f"Loaded checkpoint from {path}, epoch={self.current_epoch}")
@@ -301,6 +313,9 @@ class Trainer:
 
             if train_sampler is not None:
                 train_sampler.set_epoch(epoch)
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             epoch_loss = 0.0
             num_batches = 0
@@ -336,6 +351,8 @@ class Trainer:
             val_loss = None
             if val_loader is not None and (epoch + 1) % self.config.eval_interval == 0:
                 val_metrics = self.validate(val_loader)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 val_loss = val_metrics.get("total", float("inf"))
                 history["val_loss"].append(val_loss)
 

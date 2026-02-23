@@ -110,11 +110,12 @@ class Region:
 
 def dict_to_region(
     hierarchy_dict: dict,
-    parent: Optional[Region] = None
+    parent: Optional[Region] = None,
+    max_depth: Optional[int] = None
 ) -> Region:
     """
     Convert a dictionary-based hierarchy to Region objects.
-    
+
     Args:
         hierarchy_dict: Dictionary with keys:
             - 'indices': np.ndarray of point indices
@@ -122,34 +123,34 @@ def dict_to_region(
             - 'level': int, hierarchy level
             - 'children': list of child dicts (optional)
         parent: Parent Region (for linking)
-    
+        max_depth: Maximum hierarchy depth to load. Nodes at this level
+            become leaves (children are not expanded). None means no limit.
+
     Returns:
         Region object with children recursively converted
     """
-    # Extract required fields
     indices = hierarchy_dict['indices']
     if hasattr(indices, 'numpy'):
         indices = indices.numpy()
     indices = np.asarray(indices)
-    
+
     center_idx = int(hierarchy_dict['center_idx'])
     level = int(hierarchy_dict['level'])
-    
-    # Create the region
+
     region = Region(
         indices=indices,
         center_idx=center_idx,
         level=level,
         parent=parent
     )
-    
-    # Recursively convert children
-    if 'children' in hierarchy_dict and hierarchy_dict['children']:
+
+    should_expand = max_depth is None or level < max_depth
+    if should_expand and 'children' in hierarchy_dict and hierarchy_dict['children']:
         region.children = [
-            dict_to_region(child_dict, parent=region)
+            dict_to_region(child_dict, parent=region, max_depth=max_depth)
             for child_dict in hierarchy_dict['children']
         ]
-    
+
     return region
 
 

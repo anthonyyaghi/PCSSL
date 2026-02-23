@@ -44,7 +44,7 @@ class PointNetBackbone(nn.Module):
             layers.extend([
                 nn.Linear(in_dim, hidden_dim),
                 nn.LayerNorm(hidden_dim),
-                nn.ReLU(inplace=True)
+                nn.ReLU(inplace=False)
             ])
             in_dim = hidden_dim
         

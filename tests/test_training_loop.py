@@ -98,7 +98,8 @@ class TestDataLoading:
             split="train",
             transform=ToTensor(),
             dual_view=False,
-            max_scenes=1
+            max_scenes=1,
+            max_hierarchy_depth=2
         )
 
         assert len(dataset) >= 1
@@ -120,7 +121,8 @@ class TestDataLoading:
             split="train",
             transform=ToTensor(),
             dual_view=True,
-            max_scenes=1
+            max_scenes=1,
+            max_hierarchy_depth=2
         )
 
         sample = dataset[0]
@@ -142,7 +144,8 @@ class TestDataLoading:
             split="train",
             transform=ToTensor(),
             dual_view=True,
-            max_scenes=2
+            max_scenes=2,
+            max_hierarchy_depth=2
         )
 
         batch = [dataset[i] for i in range(min(2, len(dataset)))]
@@ -237,7 +240,8 @@ class TestTrainStep:
             split="train",
             transform=ToTensor(),
             dual_view=True,
-            max_scenes=2
+            max_scenes=2,
+            max_hierarchy_depth=2
         )
         batch = collate_fn([dataset[0], dataset[1]])
 
@@ -271,7 +275,8 @@ class TestTrainStep:
             split="train",
             transform=ToTensor(),
             dual_view=True,
-            max_scenes=2
+            max_scenes=2,
+            max_hierarchy_depth=2
         )
         batch = collate_fn([dataset[0], dataset[1]])
 
@@ -310,7 +315,8 @@ class TestOverfitOneBatch:
             split="train",
             transform=ToTensor(),
             dual_view=True,
-            max_scenes=2
+            max_scenes=2,
+            max_hierarchy_depth=2
         )
         batch = collate_fn([dataset[0], dataset[1]])
 
@@ -415,7 +421,8 @@ class TestValidation:
             split="train",
             transform=ToTensor(),
             dual_view=True,
-            max_scenes=4
+            max_scenes=4,
+            max_hierarchy_depth=2
         )
         loader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)
 
@@ -444,7 +451,8 @@ class TestValidation:
             split="train",
             transform=ToTensor(),
             dual_view=True,
-            max_scenes=2
+            max_scenes=2,
+            max_hierarchy_depth=2
         )
         loader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)
 
@@ -486,7 +494,8 @@ class TestFit:
             split="train",
             transform=ToTensor(),
             dual_view=True,
-            max_scenes=4
+            max_scenes=4,
+            max_hierarchy_depth=2
         )
         train_loader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)
         val_loader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)
@@ -520,7 +529,8 @@ class TestFit:
             split="train",
             transform=ToTensor(),
             dual_view=True,
-            max_scenes=4
+            max_scenes=4,
+            max_hierarchy_depth=2
         )
         train_loader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)
 
@@ -555,7 +565,8 @@ class TestSmallBackboneMode:
             split="train",
             transform=ToTensor(),
             dual_view=True,
-            max_scenes=4
+            max_scenes=4,
+            max_hierarchy_depth=2
         )
         train_loader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)
 

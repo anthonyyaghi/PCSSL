@@ -87,6 +87,7 @@ def main():
         dual_view=True,
         transform=transform,
         max_scenes=config.max_train_scenes,
+        max_hierarchy_depth=config.max_hierarchy_depth,
     )
 
     val_dataset = DBBDDataset(
@@ -95,6 +96,7 @@ def main():
         dual_view=True,
         transform=ToTensor(),
         max_scenes=config.max_val_scenes,
+        max_hierarchy_depth=config.max_hierarchy_depth,
     )
 
     train_sampler = None

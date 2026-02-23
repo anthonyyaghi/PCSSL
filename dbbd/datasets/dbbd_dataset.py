@@ -61,7 +61,8 @@ class DBBDDataset(Dataset):
         cache_size: int = 100,
         validate_hierarchies: bool = False,
         data_suffix: str = '.pkl',
-        max_scenes: Optional[int] = None
+        max_scenes: Optional[int] = None,
+        max_hierarchy_depth: Optional[int] = None
     ):
         """
         Initialize DBBD dataset.
@@ -84,6 +85,7 @@ class DBBDDataset(Dataset):
         self.dual_view = dual_view
         self.validate_hierarchies = validate_hierarchies
         self.data_suffix = data_suffix
+        self.max_hierarchy_depth = max_hierarchy_depth
         
         # Construct split directory path
         self.split_dir = self.data_root / split
@@ -173,7 +175,7 @@ class DBBDDataset(Dataset):
             Region tree structure
         """
         data_path = self.data_files[idx]
-        cache_key = str(data_path)
+        cache_key = f"{data_path}::depth={self.max_hierarchy_depth}"
         
         # Try to get from cache
         if self.hierarchy_cache is not None:
@@ -183,7 +185,7 @@ class DBBDDataset(Dataset):
         
         # Convert dict hierarchy to Region objects
         hierarchy_dict = raw_data['hierarchy']
-        hierarchy = dict_to_region(hierarchy_dict)
+        hierarchy = dict_to_region(hierarchy_dict, max_depth=self.max_hierarchy_depth)
         
         # Optionally validate
         if self.validate_hierarchies:

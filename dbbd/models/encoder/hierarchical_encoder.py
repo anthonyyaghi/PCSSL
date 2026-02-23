@@ -48,7 +48,8 @@ class HierarchicalEncoder(nn.Module):
         output_dim: int = 96,
         propagator_config: Optional[Dict] = None,
         aggregator_config: Optional[Dict] = None,
-        encoder_config: Optional[Dict] = None
+        encoder_config: Optional[Dict] = None,
+        use_gradient_checkpoint: bool = False
     ):
         super().__init__()
         
@@ -98,19 +99,20 @@ class HierarchicalEncoder(nn.Module):
             use_pre_mlp=aggregator_config.get('use_pre_mlp', True)
         )
         
-        # Build traversal modules
         self.g2l_traversal = G2LTraversal(
             raw_projection=self.raw_projection,
             combine_projection=self.combine_projection,
             encoder=self.encoder,
-            propagator=self.propagator
+            propagator=self.propagator,
+            use_checkpoint=use_gradient_checkpoint
         )
-        
+
         self.l2g_traversal = L2GTraversal(
             projection=self.raw_projection,
             encoder=self.encoder,
             aggregator=self.aggregator,
-            use_spatial_context=aggregator_config.get('use_spatial_context', True)
+            use_spatial_context=aggregator_config.get('use_spatial_context', True),
+            use_checkpoint=use_gradient_checkpoint
         )
         
         logger.info(
@@ -118,24 +120,35 @@ class HierarchicalEncoder(nn.Module):
             f"hidden_dim={hidden_dim}, output_dim={output_dim}"
         )
     
-    def _get_point_features(
+    def _collect_leaf_point_features(
         self,
-        coords: torch.Tensor,
-        feats: torch.Tensor
+        traversal_result: Dict,
+        num_points: int
     ) -> torch.Tensor:
         """
-        Get point-level features by encoding full scene.
-        
+        Reassemble full-scene point features from leaf region features.
+
         Args:
-            coords: (N, 3) scene coordinates
-            feats: (N, C) scene features
-            
+            traversal_result: Dict from traversal containing '_point_features' and '_point_indices'
+            num_points: Total number of points in the scene
+
         Returns:
-            (N, D) point features
+            (N, D) point features for the full scene
         """
-        encoder_input = self.raw_projection(feats)
-        _, point_feats = self.encoder(coords, encoder_input)
-        return point_feats
+        leaf_point_features = traversal_result['_point_features']
+        leaf_indices = traversal_result['_point_indices']
+
+        sample_feats = next(iter(leaf_point_features.values()))
+        device = sample_feats.device
+        feat_dim = sample_feats.shape[1]
+
+        full_point_feats = torch.zeros(num_points, feat_dim, device=device, dtype=sample_feats.dtype)
+
+        for region_id, point_feats in leaf_point_features.items():
+            indices = leaf_indices[region_id]
+            full_point_feats[indices] = point_feats
+
+        return full_point_feats
     
     def _process_scene(
         self,
@@ -224,9 +237,8 @@ class HierarchicalEncoder(nn.Module):
                 l2g_coords, l2g_feats, hierarchies[i], 'l2g'
             )
             
-            # Get point features
-            point_feats_g2l = self._get_point_features(g2l_coords, g2l_feats)
-            point_feats_l2g = self._get_point_features(l2g_coords, l2g_feats)
+            point_feats_g2l = self._collect_leaf_point_features(g2l_result, g2l_coords.shape[0])
+            point_feats_l2g = self._collect_leaf_point_features(l2g_result, l2g_coords.shape[0])
             
             # Add to collector
             collector.add_scene(
