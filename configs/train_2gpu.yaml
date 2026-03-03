@@ -1,7 +1,7 @@
 small_mode: false
 data_root: "datasets/scannet"
 num_epochs: 100
-batch_size: 4
+batch_size: 8
 num_workers: 4
 max_val_scenes: 50
 max_hierarchy_depth: 3
