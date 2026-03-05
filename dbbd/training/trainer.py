@@ -159,24 +159,26 @@ class Trainer:
 
     @torch.no_grad()
     def _compute_embedding_metrics(self, encoder_output: Dict) -> Dict[str, float]:
-        metrics = {}
+        return self._compute_embedding_metrics_detached(
+            encoder_output['point_feats_g2l'],
+            encoder_output['point_feats_l2g'],
+        )
 
-        g2l_pts = encoder_output['point_feats_g2l']
-        l2g_pts = encoder_output['point_feats_l2g']
+    @torch.no_grad()
+    def _compute_embedding_metrics_detached(
+        self, g2l_pts: torch.Tensor, l2g_pts: torch.Tensor
+    ) -> Dict[str, float]:
         g2l_norm = F.normalize(g2l_pts, dim=1)
         l2g_norm = F.normalize(l2g_pts, dim=1)
         alignment = (g2l_norm * l2g_norm).sum(dim=1).mean()
-        metrics['alignment'] = alignment.item()
 
-        feat_std = g2l_pts.std().item()
-        metrics['feat_std'] = feat_std
+        return {
+            'alignment': alignment.item(),
+            'feat_std': g2l_pts.std().item(),
+            'feat_norm': g2l_pts.norm(dim=1).mean().item(),
+        }
 
-        feat_norm = g2l_pts.norm(dim=1).mean().item()
-        metrics['feat_norm'] = feat_norm
-
-        return metrics
-
-    def train_step(self, batch: Dict) -> Tuple[torch.Tensor, Dict[str, float]]:
+    def train_step(self, batch: Dict) -> Tuple[float, Dict[str, float]]:
         self.encoder.train()
         self.loss_fn.train()
 
@@ -188,17 +190,24 @@ class Trainer:
             encoder_output = self.encoder(batch)
             total_loss, loss_dict = self.loss_fn(encoder_output)
 
-        embed_metrics = self._compute_embedding_metrics(encoder_output)
+        metrics = {k: v.item() for k, v in loss_dict.items()}
 
         self.scaler.scale(total_loss).backward()
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
-        metrics = {k: v.item() for k, v in loss_dict.items()}
+        loss_value = total_loss.item()
+        del total_loss
+
+        point_g2l = encoder_output['point_feats_g2l'].detach()
+        point_l2g = encoder_output['point_feats_l2g'].detach()
+        del encoder_output
+
+        embed_metrics = self._compute_embedding_metrics_detached(point_g2l, point_l2g)
         metrics.update(embed_metrics)
         self.global_step += 1
 
-        return total_loss, metrics
+        return loss_value, metrics
 
     def _reduce_metrics(self, metrics: Dict[str, float]) -> Dict[str, float]:
         if not self.is_distributed:
@@ -329,15 +338,18 @@ class Trainer:
 
             for batch in batch_pbar:
                 loss, metrics = self.train_step(batch)
-                epoch_loss += loss.item()
+                epoch_loss += loss
                 num_batches += 1
 
                 self._log_metrics(metrics, self.global_step, prefix="train")
                 self._log_lr(self.global_step)
 
+                if torch.cuda.is_available() and num_batches % 10 == 0:
+                    torch.cuda.empty_cache()
+
                 if show_progress:
                     batch_pbar.set_postfix({
-                        'loss': f"{loss.item():.3f}",
+                        'loss': f"{loss:.3f}",
                         'align': f"{metrics.get('alignment', 0):.3f}",
                         'std': f"{metrics.get('feat_std', 0):.3f}",
                     })

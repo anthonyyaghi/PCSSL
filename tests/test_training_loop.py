@@ -247,8 +247,8 @@ class TestTrainStep:
 
         loss, metrics = trainer.train_step(batch)
 
-        assert loss.dim() == 0
-        assert not torch.isnan(loss)
+        assert isinstance(loss, float)
+        assert np.isfinite(loss)
         assert "total" in metrics
         assert "region" in metrics
         assert "point" in metrics
@@ -324,7 +324,7 @@ class TestOverfitOneBatch:
         losses = []
         for _ in range(20):
             loss, _ = trainer.train_step(batch)
-            losses.append(loss.item())
+            losses.append(loss)
 
         assert losses[-1] < losses[0], f"Loss did not decrease: {losses[0]:.4f} -> {losses[-1]:.4f}"
 
