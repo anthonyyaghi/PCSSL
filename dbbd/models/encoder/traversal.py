@@ -16,6 +16,12 @@ from ..utils.hierarchy import Region
 logger = logging.getLogger(__name__)
 
 
+def _pool(point_feats: torch.Tensor, mode: str = 'max') -> torch.Tensor:
+    if mode == 'max':
+        return point_feats.max(dim=0)[0]
+    return point_feats.mean(dim=0)
+
+
 class L2GTraversal(nn.Module):
     """
     Local-to-Global (L2G) traversal.
@@ -38,7 +44,8 @@ class L2GTraversal(nn.Module):
         encoder: nn.Module,
         aggregator: nn.Module,
         use_spatial_context: bool = True,
-        use_checkpoint: bool = False
+        use_checkpoint: bool = False,
+        pooling: str = 'max'
     ):
         super().__init__()
 
@@ -47,21 +54,25 @@ class L2GTraversal(nn.Module):
         self.aggregator = aggregator
         self.use_spatial_context = use_spatial_context
         self.use_checkpoint = use_checkpoint
-    
+        self.pooling = pooling
+
     def forward(
         self,
         root: Region,
         coords: torch.Tensor,
-        feats: torch.Tensor
+        feats: torch.Tensor,
+        precomputed_feats: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Traverse hierarchy bottom-up.
-        
+
         Args:
             root: Root region of hierarchy
             coords: (N, 3) scene coordinates
             feats: (N, C) scene features (raw)
-            
+            precomputed_feats: (N, D) optional pre-encoded features (SpUNet path).
+                When provided, leaf features are looked up instead of encoded.
+
         Returns:
             Dict mapping level names to feature tensors
             e.g., {'level_0': (1, D), 'level_1': (4, D), ...}
@@ -73,21 +84,25 @@ class L2GTraversal(nn.Module):
         def traverse(region: Region) -> torch.Tensor:
             """Recursive post-order traversal."""
             if region.is_leaf:
-                region_coords = coords[region.indices]
-                region_feats = feats[region.indices]
-                center = coords[region.center_idx]
-
-                projected = self.projection(region_feats)
-
-                if self.use_checkpoint and torch.is_grad_enabled():
-                    region_feat, point_feats = grad_checkpoint(
-                        self.encoder, region_coords, projected, center,
-                        use_reentrant=False
-                    )
+                if precomputed_feats is not None:
+                    point_feats = precomputed_feats[region.indices]
+                    region_feat = _pool(point_feats, self.pooling)
                 else:
-                    region_feat, point_feats = self.encoder(
-                        region_coords, projected, center=center
-                    )
+                    region_coords = coords[region.indices]
+                    region_feats = feats[region.indices]
+                    center = coords[region.center_idx]
+
+                    projected = self.projection(region_feats)
+
+                    if self.use_checkpoint and torch.is_grad_enabled():
+                        region_feat, point_feats = grad_checkpoint(
+                            self.encoder, region_coords, projected, center,
+                            use_reentrant=False
+                        )
+                    else:
+                        region_feat, point_feats = self.encoder(
+                            region_coords, projected, center=center
+                        )
 
                 features_by_level[f'level_{region.level}'].append(region_feat)
                 point_features[id(region)] = point_feats
@@ -158,7 +173,8 @@ class G2LTraversal(nn.Module):
         combine_projection: nn.Module,
         encoder: nn.Module,
         propagator: nn.Module,
-        use_checkpoint: bool = False
+        use_checkpoint: bool = False,
+        pooling: str = 'max'
     ):
         super().__init__()
 
@@ -167,21 +183,26 @@ class G2LTraversal(nn.Module):
         self.encoder = encoder
         self.propagator = propagator
         self.use_checkpoint = use_checkpoint
-    
+        self.pooling = pooling
+
     def forward(
         self,
         root: Region,
         coords: torch.Tensor,
-        feats: torch.Tensor
+        feats: torch.Tensor,
+        precomputed_feats: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Traverse hierarchy top-down.
-        
+
         Args:
             root: Root region of hierarchy
             coords: (N, 3) scene coordinates
             feats: (N, C) scene features (raw)
-            
+            precomputed_feats: (N, D) optional pre-encoded features (SpUNet path).
+                When provided, features are looked up and refined with propagation
+                instead of being encoded per-region.
+
         Returns:
             Dict mapping level names to feature tensors
         """
@@ -192,30 +213,47 @@ class G2LTraversal(nn.Module):
         def traverse(region: Region, parent_feat: Optional[torch.Tensor] = None):
             """Recursive pre-order traversal."""
             region_coords = coords[region.indices]
-            region_feats = feats[region.indices]
-            center = coords[region.center_idx]
 
-            if parent_feat is None:
-                encoder_input = self.raw_projection(region_feats)
+            if precomputed_feats is not None:
+                if parent_feat is None:
+                    point_feats = precomputed_feats[region.indices]
+                    region_feat = _pool(point_feats, self.pooling)
+                else:
+                    spunet_feats = precomputed_feats[region.indices]
+                    if self.use_checkpoint and torch.is_grad_enabled():
+                        propagated = grad_checkpoint(
+                            self.propagator, parent_feat, region_coords,
+                            use_reentrant=False
+                        )
+                    else:
+                        propagated = self.propagator(parent_feat, region_coords)
+                    point_feats = self.combine_projection(spunet_feats, propagated)
+                    region_feat = _pool(point_feats, self.pooling)
             else:
+                region_feats = feats[region.indices]
+                center = coords[region.center_idx]
+
+                if parent_feat is None:
+                    encoder_input = self.raw_projection(region_feats)
+                else:
+                    if self.use_checkpoint and torch.is_grad_enabled():
+                        propagated = grad_checkpoint(
+                            self.propagator, parent_feat, region_coords,
+                            use_reentrant=False
+                        )
+                    else:
+                        propagated = self.propagator(parent_feat, region_coords)
+                    encoder_input = self.combine_projection(region_feats, propagated)
+
                 if self.use_checkpoint and torch.is_grad_enabled():
-                    propagated = grad_checkpoint(
-                        self.propagator, parent_feat, region_coords,
+                    region_feat, point_feats = grad_checkpoint(
+                        self.encoder, region_coords, encoder_input, center,
                         use_reentrant=False
                     )
                 else:
-                    propagated = self.propagator(parent_feat, region_coords)
-                encoder_input = self.combine_projection(region_feats, propagated)
-
-            if self.use_checkpoint and torch.is_grad_enabled():
-                region_feat, point_feats = grad_checkpoint(
-                    self.encoder, region_coords, encoder_input, center,
-                    use_reentrant=False
-                )
-            else:
-                region_feat, point_feats = self.encoder(
-                    region_coords, encoder_input, center=center
-                )
+                    region_feat, point_feats = self.encoder(
+                        region_coords, encoder_input, center=center
+                    )
 
             features_by_level[f'level_{region.level}'].append(region_feat)
 

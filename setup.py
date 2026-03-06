@@ -38,6 +38,10 @@ setup(
         'vis': [
             'matplotlib>=3.5.0',
             'open3d>=0.15.0',
+        ],
+        'spunet': [
+            'spconv-cu124>=2.3.0',
+            'timm>=0.9.0',
         ]
     },
     classifiers=[

@@ -81,6 +81,8 @@ class Trainer:
             aggregator_config=aggregator_config,
             encoder_config=encoder_config,
             use_gradient_checkpoint=self.config.use_gradient_checkpoint,
+            backbone=self.config.backbone,
+            spunet_config=self.config.spunet,
         ).to(self.device)
 
         self.loss_fn = DBBDContrastiveLoss(

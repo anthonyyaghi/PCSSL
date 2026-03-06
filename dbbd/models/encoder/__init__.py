@@ -1,7 +1,7 @@
 """
 Encoder Module
 
-Hierarchical encoding components for DBBD Phase 3.
+Hierarchical encoding components for DBBD.
 """
 
 from .projection import ProjectionMLP, CombineProjection
@@ -20,4 +20,10 @@ __all__ = [
     "FeatureCollector",
     "HierarchicalEncoder",
 ]
+
+try:
+    from .spunet import SpUNet, SpUNetSceneEncoder
+    __all__.extend(["SpUNet", "SpUNetSceneEncoder"])
+except ImportError:
+    pass
 

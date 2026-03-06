@@ -1,7 +1,7 @@
 """Training Configuration"""
 
 from dataclasses import dataclass, field, asdict
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 
 @dataclass
@@ -13,6 +13,8 @@ class TrainingConfig:
     output_dim: int = 96
     encoder_hidden_dims: List[int] = field(default_factory=lambda: [64, 128])
     encoder_pooling: str = "max"
+    backbone: str = "pointnet"
+    spunet: Optional[Dict[str, Any]] = None
 
     propagator_hidden_dim: int = 128
     propagator_num_layers: int = 2
