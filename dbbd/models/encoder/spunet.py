@@ -17,6 +17,7 @@ import torch
 import torch.nn as nn
 
 import spconv.pytorch as spconv
+from spconv.pytorch import ConvAlgo
 from timm.layers import trunc_normal_
 
 
@@ -166,6 +167,7 @@ class SpUNet(nn.Module):
                         stride=2,
                         bias=False,
                         indice_key=f"spconv{s + 1}",
+                        algo=ConvAlgo.Native,
                     ),
                     norm_fn(channels[s]),
                     nn.ReLU(),
@@ -198,6 +200,7 @@ class SpUNet(nn.Module):
                         kernel_size=2,
                         bias=False,
                         indice_key=f"spconv{s + 1}",
+                        algo=ConvAlgo.Native,
                     ),
                     norm_fn(dec_channels),
                     nn.ReLU(),
@@ -289,6 +292,8 @@ class SpUNet(nn.Module):
         skips = [x]
 
         for s in range(self.num_stages):
+            if x.features.shape[0] == 0:
+                break
             x = self.down[s](x)
             x = self.enc[s](x)
             skips.append(x)
