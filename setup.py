@@ -26,6 +26,7 @@ setup(
         'numpy>=1.21.0',
         'scipy>=1.7.0',
         'tqdm>=4.50.0',
+        'tensorboard>=2.11.0',
     ],
     extras_require={
         'dev': [
