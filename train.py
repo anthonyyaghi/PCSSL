@@ -9,6 +9,10 @@ Usage:
     torchrun --nproc_per_node=2 train.py --config configs/debug_local.yaml
 """
 
+import warnings
+warnings.filterwarnings("ignore", message=".*torch.cuda.amp.*deprecated.*")
+warnings.filterwarnings("ignore", message=".*torch.cpu.amp.*deprecated.*")
+
 import argparse
 import logging
 import os
