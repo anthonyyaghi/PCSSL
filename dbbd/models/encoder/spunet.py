@@ -57,7 +57,8 @@ class BasicBlock(spconv.SparseModule):
         else:
             self.proj = spconv.SparseSequential(
                 spconv.SubMConv3d(
-                    in_channels, embed_channels, kernel_size=1, bias=False
+                    in_channels, embed_channels, kernel_size=1, bias=False,
+                    algo=ConvAlgo.Native,
                 ),
                 norm_fn(embed_channels),
             )
@@ -70,6 +71,7 @@ class BasicBlock(spconv.SparseModule):
             padding=1,
             bias=bias,
             indice_key=indice_key,
+            algo=ConvAlgo.Native,
         )
         self.bn1 = norm_fn(embed_channels)
         self.relu = nn.ReLU()
@@ -81,6 +83,7 @@ class BasicBlock(spconv.SparseModule):
             padding=1,
             bias=bias,
             indice_key=indice_key,
+            algo=ConvAlgo.Native,
         )
         self.bn2 = norm_fn(embed_channels)
         self.stride = stride
@@ -145,6 +148,7 @@ class SpUNet(nn.Module):
                 padding=1,
                 bias=False,
                 indice_key="stem",
+                algo=ConvAlgo.Native,
             ),
             norm_fn(base_channels),
             nn.ReLU(),
