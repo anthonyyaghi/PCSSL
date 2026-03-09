@@ -1,0 +1,33 @@
+small_mode: false
+data_root: "datasets/scannet"
+num_epochs: 3
+batch_size: 2
+num_workers: 2
+max_train_scenes: 20
+max_val_scenes: 10
+max_hierarchy_depth: 3
+checkpoint_dir: "checkpoints/validate_spunet"
+log_dir: "runs/validate_spunet"
+eval_interval: 1
+save_interval: 3
+verbose: true
+device: "cuda"
+learning_rate: 0.001
+weight_decay: 0.01
+scheduler_type: "cosine"
+T_max: 3
+eta_min: 0.00001
+temperature: 0.1
+alpha: 1.0
+beta: 0.5
+point_num_samples: 4096
+seed: 42
+use_amp: true
+use_gradient_checkpoint: true
+
+backbone: "spunet"
+spunet:
+  voxel_size: 0.02
+  base_channels: 32
+  channels: [32, 64, 128, 256, 256, 128, 96, 96]
+  layers: [2, 3, 4, 6, 2, 2, 2, 2]
